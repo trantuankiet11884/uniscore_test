@@ -26,6 +26,8 @@ interface GameState {
   round: number;
   isGameOver: boolean;
   penalizedCount: number;
+  roundNumber: number;
+  firstPenalizedPlayers: number[];
 }
 
 const TECHNIQUES: Technique[] = [
@@ -47,10 +49,22 @@ const getRandomTechniques = () => {
   return shuffled.slice(0, 5);
 };
 
-const checkPassing = (techniqueScore: number, defenseScore: number): boolean => {
+const checkPassing = (techniqueScore: number, defenseScore: number) => {
   const defensiveRatio = defenseScore / (techniqueScore + defenseScore);
-  return Math.random() < defensiveRatio;
+  return Math.random() < defensiveRatio ? 0 : 1;
 };
+
+/**
+TH1️.Khi chuyền bóng thành công:
+Cầu thủ A được chọn ngẫu nhiên 1 kỹ thuật để chuyền cho cầu thủ B
+Nếu cầu thủ A chuyền thành công (tỉ lệ thành công > phòng thủ):
+Cầu thủ A được công điểm với công thức = (10 - số thứ tự lần đầu họ bị phạt) + điểm kỹ thuật vừa dùng
+
+TH2.Khi chuyền bóng thất bại:
+Nếu cầu thủ A chuyền thất bại (tỉ lệ thành công < phòng thủ):
+Cầu thủ chuyền bóng bị phạt thay cho người đang bị phạt
+Người đang bị phạt được chơi tiếp tục
+*/
 
 const GhostFootball = () => {
   const [gameState, setGameState] = useState<GameState>({
@@ -61,6 +75,8 @@ const GhostFootball = () => {
     round: 0,
     isGameOver: false,
     penalizedCount: 0,
+    roundNumber: 1,
+    firstPenalizedPlayers: [],
   });
 
   const [initialPlayers, setInitialPlayers] = useState<{ name: string; number: string }[]>([]);
@@ -90,19 +106,68 @@ const GhostFootball = () => {
       round: 1,
       isGameOver: false,
       penalizedCount: 0,
+      roundNumber: 1,
+      firstPenalizedPlayers: [],
     });
   };
 
-  const resetGame = () => {
-    if (initialPlayers.length === 0) {
-      message.error('Không có dữ liệu người chơi để khởi tạo lại!');
+  const resetCurrentRound = () => {
+    const currentRoundNumber = gameState.roundNumber;
+    const previousFirstPenalized = gameState.firstPenalizedPlayers;
+
+    setGameState((prev) => ({
+      ...prev,
+      players: prev.players.map((p) => ({
+        ...p,
+        defenseScore: Math.floor(Math.random() * 5) + 1,
+        techniques: getRandomTechniques(),
+        score: 0,
+        penaltyOrder: null,
+        firstPenaltyOrder: null,
+      })),
+      currentPenalizedPlayer: null,
+      gameHistory: [],
+      techniquesUsed: {},
+      round: 1,
+      isGameOver: false,
+      penalizedCount: 0,
+      roundNumber: currentRoundNumber,
+      firstPenalizedPlayers: previousFirstPenalized,
+    }));
+  };
+
+  const startNextRound = () => {
+    if (gameState.roundNumber >= 10) {
+      message.info('Đã hoàn thành 10 lượt chơi!');
       return;
     }
 
-    startNewRound(initialPlayers);
+    setGameState((prev) => {
+      const nextRoundNumber = prev.roundNumber + 1;
+      return {
+        ...prev,
+        players: prev.players.map((p) => ({
+          ...p,
+          defenseScore: Math.floor(Math.random() * 5) + 1,
+          techniques: getRandomTechniques(),
+          score: 0,
+          penaltyOrder: null,
+          firstPenaltyOrder: null,
+        })),
+        currentPenalizedPlayer: null,
+        gameHistory: [],
+        techniquesUsed: {},
+        round: 1,
+        isGameOver: false,
+        penalizedCount: 0,
+        roundNumber: nextRoundNumber,
+        firstPenalizedPlayers: prev.firstPenalizedPlayers,
+      };
+    });
 
-    message.success('Đã khởi tạo lại trò chơi!');
+    message.success(`Bắt đầu lượt chơi ${gameState.roundNumber + 1}`);
   };
+
   const calculateScore = (player: Player, techniquePoints: number = 0): number => {
     if (player.firstPenaltyOrder === null) return 0;
 
@@ -116,8 +181,13 @@ const GhostFootball = () => {
     const penalizedPlayers = players.filter((player) => player.penaltyOrder !== null);
 
     if (availablePlayers.length === 1 && penalizedPlayers.length === players.length - 1) {
-      setGameState((prev) => ({ ...prev, isGameOver: true }));
-      message.info('Trò chơi đã kết thúc!');
+      if (gameState.roundNumber < 10) {
+        message.info(`Lượt chơi ${gameState.roundNumber} kết thúc!`);
+        startNextRound();
+      } else {
+        setGameState((prev) => ({ ...prev, isGameOver: true }));
+        message.info('Đã hoàn thành tất cả 10 lượt chơi!');
+      }
       return;
     }
 
@@ -129,10 +199,21 @@ const GhostFootball = () => {
 
     setGameState((prev) => {
       const newPenalizedCount = isSuccessful ? prev.penalizedCount : prev.penalizedCount + 1;
+      let newFirstPenalizedPlayers = [...prev.firstPenalizedPlayers];
+
+      if (!isSuccessful && prev.penalizedCount === 0) {
+        if (newFirstPenalizedPlayers.includes(randomPlayer.id)) {
+          message.warning('Người chơi này đã từng bị phạt đầu ở lượt trước, hãy chơi lại lượt này!');
+          resetCurrentRound();
+          return prev;
+        }
+        newFirstPenalizedPlayers.push(randomPlayer.id);
+      }
 
       return {
         ...prev,
         penalizedCount: newPenalizedCount,
+        firstPenalizedPlayers: newFirstPenalizedPlayers,
         techniquesUsed: {
           ...prev.techniquesUsed,
           [randomTechnique.name]: (prev.techniquesUsed[randomTechnique.name] || 0) + 1,
@@ -160,9 +241,9 @@ const GhostFootball = () => {
         round: prev.round + 1,
         gameHistory: [
           ...prev.gameHistory,
-          `${randomPlayer.name} (${randomPlayer.number}) sử dụng kỹ thuật ${randomTechnique.name} - ${resultText}${
-            isSuccessful ? ` (+${randomTechnique.difficulty} điểm)` : ` (thứ tự bị phạt: ${newPenalizedCount})`
-          }`,
+          `Lượt ${prev.roundNumber} ${randomPlayer.name} (${randomPlayer.number}) sử dụng kỹ thuật ${
+            randomTechnique.name
+          } - ${resultText}${isSuccessful ? ` (+${randomTechnique.difficulty} điểm)` : ` (thứ tự bị phạt: ${newPenalizedCount})`}`,
         ],
       };
     });
@@ -236,10 +317,13 @@ const GhostFootball = () => {
           <div>
             <div className='flex gap-4 mb-4'>
               <Button onClick={playRound} disabled={gameState.isGameOver} type='primary'>
-                Chơi vòng đấu {gameState.round}
+                Chơi vòng {gameState.round} (Lượt {gameState.roundNumber}/10)
               </Button>
-              <Button onClick={resetGame} danger>
-                Chơi lại
+              <Button onClick={resetCurrentRound} type='default'>
+                Chơi lại lượt hiện tại
+              </Button>
+              <Button onClick={() => startNewRound(initialPlayers)} danger>
+                Chơi lại từ đầu
               </Button>
             </div>
 
@@ -272,11 +356,13 @@ const GhostFootball = () => {
               <div className=''>
                 <h3>Lịch sử thi đấu</h3>
                 <ul>
-                  {gameState.gameHistory.map((event, index) => (
-                    <li key={index}>
-                      {`Vòng đấu ${index + 1}`}: {event}
-                    </li>
-                  ))}
+                  {gameState.gameHistory
+                    .map((event, index) => (
+                      <li key={index}>
+                        {`Vòng đấu ${index + 1} - `} {event}
+                      </li>
+                    ))
+                    .reverse()}
                 </ul>
               </div>
             </div>
